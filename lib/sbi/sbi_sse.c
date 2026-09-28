@@ -108,6 +108,11 @@ struct sbi_sse_event {
 
 /** Per-hart state */
 struct sse_hart_state {
+	/**
+	 * Lock that protects enabled_event_list
+	 */
+	spinlock_t enabled_event_lock;
+
 	/* Priority sorted list of enabled events (global and local in >=
 	 * ENABLED state). This list is protected by the enabled_event_lock.
 	 *
@@ -124,12 +129,7 @@ struct sse_hart_state {
 	 * this enabled_event_list and thus can only be removed from this
 	 * list upon disable ecall or on complete with ONESHOT flag.
 	 */
-	struct sbi_dlist enabled_event_list;
-
-	/**
-	 * Lock that protects enabled_event_list
-	 */
-	spinlock_t enabled_event_lock;
+	struct sbi_dlist enabled_event_list GUARDED_BY(&enabled_event_lock);
 
 	/**
 	 * List of local events allocated at boot time.
@@ -148,15 +148,15 @@ struct sse_hart_state {
  */
 struct sse_global_event {
 	/**
-	 * global event struct
-	 */
-	struct sbi_sse_event event;
-
-	/**
 	 * Global event lock protecting access from multiple harts from ecall to
 	 * the event.
 	 */
 	spinlock_t lock;
+
+	/**
+	 * global event struct
+	 */
+	struct sbi_sse_event event GUARDED_BY(&lock);
 };
 
 struct sse_event_info {
@@ -265,28 +265,6 @@ static struct sse_global_event *sse_get_global_event(struct sbi_sse_event *e)
 	return container_of(e, struct sse_global_event, event);
 }
 
-/**
- * If event is global, must be called under enabled event lock
- */
-static void sse_enabled_event_lock(struct sbi_sse_event *e)
-{
-	struct sse_hart_state *shs;
-
-	shs = sse_get_hart_state(e);
-	spin_lock(&shs->enabled_event_lock);
-}
-
-/**
- * If event is global, must be called under enabled event lock
- */
-static void sse_enabled_event_unlock(struct sbi_sse_event *e)
-{
-	struct sse_hart_state *shs;
-
-	shs = sse_get_hart_state(e);
-	spin_unlock(&shs->enabled_event_lock);
-}
-
 static void sse_event_set_state(struct sbi_sse_event *e,
 				unsigned long new_state)
 {
@@ -294,7 +272,8 @@ static void sse_event_set_state(struct sbi_sse_event *e,
 	e->attrs.status |= new_state;
 }
 
-static int sse_event_get(uint32_t event_id, struct sbi_sse_event **eret)
+static int sse_event_get(uint32_t event_id,
+			 struct sbi_sse_event **eret) NO_THREAD_SAFETY_ANALYSIS
 {
 	unsigned int i;
 	struct sbi_sse_event *e;
@@ -331,7 +310,7 @@ static int sse_event_get(uint32_t event_id, struct sbi_sse_event **eret)
 	return SBI_EINVAL;
 }
 
-static void sse_event_put(struct sbi_sse_event *e)
+static void sse_event_put(struct sbi_sse_event *e) NO_THREAD_SAFETY_ANALYSIS
 {
 	struct sse_global_event *ge;
 
@@ -350,9 +329,10 @@ static void sse_event_remove_from_list(struct sbi_sse_event *e)
 /**
  * Must be called under owner hart lock
  */
-static void sse_event_add_to_list(struct sbi_sse_event *e)
+static void sse_event_add_to_list(struct sse_hart_state *state,
+				   struct sbi_sse_event *e)
+	MUST_HOLD(&state->enabled_event_lock)
 {
-	struct sse_hart_state *state = sse_get_hart_state(e);
 	struct sbi_sse_event *tmp;
 
 	sbi_list_for_each_entry(tmp, &state->enabled_event_list, node) {
@@ -368,7 +348,9 @@ static void sse_event_add_to_list(struct sbi_sse_event *e)
 /**
  * Must be called under owner hart lock
  */
-static int sse_event_disable(struct sbi_sse_event *e)
+static int sse_event_disable(struct sse_hart_state *shs,
+			      struct sbi_sse_event *e)
+	MUST_HOLD(&shs->enabled_event_lock)
 {
 	if (sse_event_state(e) != SBI_SSE_STATE_ENABLED)
 		return SBI_EINVALID_STATE;
@@ -800,13 +782,15 @@ static int sse_inject_event(uint32_t event_id, unsigned long hartid)
 /**
  * Must be called under owner hart lock
  */
-static int sse_event_enable(struct sbi_sse_event *e)
+static int sse_event_enable(struct sse_hart_state *shs,
+			     struct sbi_sse_event *e)
+	MUST_HOLD(&shs->enabled_event_lock)
 {
 	if (sse_event_state(e) != SBI_SSE_STATE_REGISTERED)
 		return SBI_EINVALID_STATE;
 
 	sse_event_set_state(e, SBI_SSE_STATE_ENABLED);
-	sse_event_add_to_list(e);
+	sse_event_add_to_list(shs, e);
 
 	sse_event_invoke_cb(e, enable_cb);
 
@@ -817,9 +801,11 @@ static int sse_event_enable(struct sbi_sse_event *e)
 	return SBI_OK;
 }
 
-static int sse_event_complete(struct sbi_sse_event *e,
+static int sse_event_complete(struct sse_hart_state *shs,
+			      struct sbi_sse_event *e,
 			      struct sbi_trap_regs *regs,
 			      struct sbi_ecall_return *out)
+	MUST_HOLD(&shs->enabled_event_lock)
 {
 	if (sse_event_state(e) != SBI_SSE_STATE_RUNNING)
 		return SBI_EINVALID_STATE;
@@ -829,7 +815,7 @@ static int sse_event_complete(struct sbi_sse_event *e,
 
 	sse_event_set_state(e, SBI_SSE_STATE_ENABLED);
 	if (e->attrs.config & SBI_SSE_ATTR_CONFIG_ONESHOT)
-		sse_event_disable(e);
+		sse_event_disable(shs, e);
 
 	sse_event_invoke_cb(e, complete_cb);
 
@@ -852,7 +838,7 @@ int sbi_sse_complete(struct sbi_trap_regs *regs, struct sbi_ecall_return *out)
 		 * the one that needs to be completed
 		 */
 		if (sse_event_state(tmp) == SBI_SSE_STATE_RUNNING) {
-			ret = sse_event_complete(tmp, regs, out);
+			ret = sse_event_complete(state, tmp, regs, out);
 			break;
 		}
 	}
@@ -865,14 +851,16 @@ int sbi_sse_enable(uint32_t event_id)
 {
 	int ret;
 	struct sbi_sse_event *e;
+	struct sse_hart_state *shs;
 
 	ret = sse_event_get(event_id, &e);
 	if (ret)
 		return ret;
 
-	sse_enabled_event_lock(e);
-	ret = sse_event_enable(e);
-	sse_enabled_event_unlock(e);
+	shs = sse_get_hart_state(e);
+	spin_lock(&shs->enabled_event_lock);
+	ret = sse_event_enable(shs, e);
+	spin_unlock(&shs->enabled_event_lock);
 	sse_event_put(e);
 
 	return ret;
@@ -882,14 +870,16 @@ int sbi_sse_disable(uint32_t event_id)
 {
 	int ret;
 	struct sbi_sse_event *e;
+	struct sse_hart_state *shs;
 
 	ret = sse_event_get(event_id, &e);
 	if (ret)
 		return ret;
 
-	sse_enabled_event_lock(e);
-	ret = sse_event_disable(e);
-	sse_enabled_event_unlock(e);
+	shs = sse_get_hart_state(e);
+	spin_lock(&shs->enabled_event_lock);
+	ret = sse_event_disable(shs, e);
+	spin_unlock(&shs->enabled_event_lock);
 
 	sse_event_put(e);
 
@@ -1190,6 +1180,7 @@ static int sse_global_init()
 }
 
 static void sse_local_init(struct sse_hart_state *shs)
+	NO_THREAD_SAFETY_ANALYSIS
 {
 	unsigned int ev = 0;
 	struct sse_event_info *info;

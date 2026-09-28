@@ -107,6 +107,8 @@ static void hart_context_set(struct sbi_domain *dom, u32 hartindex,
  */
 static int switch_to_next_domain_context(struct hart_context *ctx,
 					  struct hart_context *dom_ctx)
+	MUST_NOT_HOLD(&ctx->dom->assigned_harts_lock)
+	MUST_NOT_HOLD(&dom_ctx->dom->assigned_harts_lock)
 {
 	u32 hartindex = current_hartindex();
 	struct sbi_trap_context *trap_ctx;
@@ -231,9 +233,14 @@ int sbi_domain_context_enter(struct sbi_domain *dom)
 	int rc;
 	struct hart_context *dom_ctx;
 	struct hart_context *ctx = hart_context_thishart_get();
+	u32 hartindex = current_hartindex();
 
 	/* Target domain must not be same as the current domain */
 	if (!dom || dom == sbi_domain_thishart_ptr())
+		return SBI_EINVAL;
+
+	/* Target domain must have current hart as a possible harts */
+	if (!sbi_hartmask_test_hartindex(hartindex, dom->possible_harts))
 		return SBI_EINVAL;
 
 	/*
@@ -242,7 +249,7 @@ int sbi_domain_context_enter(struct sbi_domain *dom)
 	 * domain on the current hart.
 	 */
 	if (!ctx) {
-		rc = hart_context_init(current_hartindex());
+		rc = hart_context_init(hartindex);
 		if (rc)
 			return rc;
 
@@ -251,7 +258,7 @@ int sbi_domain_context_enter(struct sbi_domain *dom)
 			return SBI_EINVAL;
 	}
 
-	dom_ctx = hart_context_get(dom, current_hartindex());
+	dom_ctx = hart_context_get(dom, hartindex);
 	/* Validate the domain context existence */
 	if (!dom_ctx)
 		return SBI_EINVAL;
@@ -276,7 +283,7 @@ int sbi_domain_context_exit(void)
 	 * its context on the current hart if valid.
 	 */
 	if (!ctx) {
-		rc = hart_context_init(current_hartindex());
+		rc = hart_context_init(hartindex);
 		if (rc)
 			return rc;
 
@@ -286,25 +293,29 @@ int sbi_domain_context_exit(void)
 	}
 
 	dom_ctx = ctx->prev_ctx;
+	ctx->prev_ctx = NULL;
 
 	/* If no previous caller context */
 	if (!dom_ctx) {
-		/* Try to find next uninitialized user-defined domain's context */
+		/* Try to find next uninitialized domain with least initialization order */
+		dom_ctx = NULL;
 		sbi_domain_for_each(dom) {
-			if (dom == &root || dom == sbi_domain_thishart_ptr())
+			if (dom == sbi_domain_thishart_ptr())
+				continue;
+
+			if (!sbi_hartmask_test_hartindex(hartindex, dom->possible_harts))
 				continue;
 
 			tmp = hart_context_get(dom, hartindex);
-			if (tmp && !tmp->initialized) {
+			if (tmp && tmp->initialized)
+				continue;
+
+			if (!dom_ctx || tmp->dom->init_order < dom_ctx->dom->init_order)
 				dom_ctx = tmp;
-				break;
-			}
 		}
 	}
-
-	/* Take the root domain context if fail to find */
 	if (!dom_ctx)
-		dom_ctx = hart_context_get(&root, hartindex);
+		return SBI_ENOENT;
 
 	return switch_to_next_domain_context(ctx, dom_ctx);
 }

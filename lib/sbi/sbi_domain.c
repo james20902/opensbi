@@ -28,6 +28,7 @@ static bool domain_finalized = false;
 
 struct sbi_domain root = {
 	.name = "root",
+	.init_order = -1U,
 	.possible_harts = NULL,
 	.regions = NULL,
 	.system_reset_allowed = true,
@@ -60,6 +61,7 @@ void sbi_update_hartindex_to_domain(u32 hartindex, struct sbi_domain *dom)
 }
 
 bool sbi_domain_is_assigned_hart(const struct sbi_domain *dom, u32 hartindex)
+	MUST_NOT_HOLD(&dom->assigned_harts_lock)
 {
 	bool ret;
 	struct sbi_domain *tdom = (struct sbi_domain *)dom;
@@ -76,6 +78,7 @@ bool sbi_domain_is_assigned_hart(const struct sbi_domain *dom, u32 hartindex)
 
 int sbi_domain_get_assigned_hartmask(const struct sbi_domain *dom,
 				     struct sbi_hartmask *mask)
+	MUST_NOT_HOLD(&dom->assigned_harts_lock)
 {
 	ulong ret = 0;
 	struct sbi_domain *tdom = (struct sbi_domain *)dom;
@@ -537,6 +540,9 @@ void sbi_domain_dump(const struct sbi_domain *dom, const char *suffix)
 	sbi_printf("Domain%d Name        %s: %s\n",
 		   dom->index, suffix, dom->name);
 
+	sbi_printf("Domain%d Init Order  %s: 0x%x\n",
+		   dom->index, suffix, dom->init_order);
+
 	sbi_printf("Domain%d Boot HART   %s: %d\n",
 		   dom->index, suffix, dom->boot_hartid);
 
@@ -625,21 +631,25 @@ void sbi_domain_dump_all(const char *suffix)
 	}
 }
 
-int sbi_domain_register(struct sbi_domain *dom,
-			const struct sbi_hartmask *assign_mask)
+int sbi_domain_register(struct sbi_domain *dom)
+	NO_THREAD_SAFETY_ANALYSIS
 {
-	u32 i;
-	int rc;
+	u32 i, cold_hartid = current_hartid();
 	struct sbi_domain *tdom;
-	u32 cold_hartid = current_hartid();
+	int rc;
 
 	/* Sanity checks */
-	if (!dom || !assign_mask || domain_finalized)
+	if (!dom || domain_finalized)
 		return SBI_EINVAL;
 
-	/* Check if domain already discovered */
+	/*
+	 * Ensure that:
+	 *  1) Domain not already registered
+	 *  2) Initialization order is unique
+	 */
 	sbi_domain_for_each(tdom) {
-		if (tdom == dom)
+		if (tdom == dom ||
+		    tdom->init_order == dom->init_order)
 			return SBI_EALREADY;
 	}
 
@@ -663,15 +673,19 @@ int sbi_domain_register(struct sbi_domain *dom,
 	/* Clear assigned HARTs of domain */
 	sbi_hartmask_clear_all(&dom->assigned_harts);
 
-	/* Assign domain to HART if HART is a possible HART */
-	sbi_hartmask_for_each_hartindex(i, assign_mask) {
-		if (!sbi_hartmask_test_hartindex(i, dom->possible_harts))
-			continue;
-
+	/*
+	 * Assign HART to a domain with the least initialization order
+	 * where the HART is listed as a possible HART of the domain.
+	 */
+	sbi_hartmask_for_each_hartindex(i, dom->possible_harts) {
 		tdom = sbi_hartindex_to_domain(i);
-		if (tdom)
-			sbi_hartmask_clear_hartindex(i,
-					&tdom->assigned_harts);
+		if (tdom) {
+			if (tdom->init_order > dom->init_order)
+				sbi_hartmask_clear_hartindex(i, &tdom->assigned_harts);
+			else
+				continue;
+		}
+
 		sbi_update_hartindex_to_domain(i, dom);
 		sbi_hartmask_set_hartindex(i, &dom->assigned_harts);
 
@@ -975,7 +989,7 @@ int sbi_domain_init(struct sbi_scratch *scratch, u32 cold_hartid)
 		sbi_hartmask_set_hartindex(i, root_hmask);
 
 	/* Finally register the root domain */
-	rc = sbi_domain_register(&root, root_hmask);
+	rc = sbi_domain_register(&root);
 	if (rc)
 		goto fail_free_root_hmask;
 

@@ -39,6 +39,9 @@ has following details:
 
 * **index** - Logical index of this domain
 * **name** - Name of this domain
+* **init_order** - Initialization order of this domain. Domain with a
+  lower initialization order will be booted first and two domains must
+  not have same initialization order.
 * **assigned_harts** - HARTs assigned to this domain
 * **possible_harts** - HARTs possible in this domain
 * **regions** - Array of memory regions terminated by a memory region
@@ -75,6 +78,8 @@ following manner:
 
 * **index** - Logical index of the ROOT domain is always zero
 * **name** - Name of the ROOT domain is "root"
+* **init_order** - Initialization order of the ROOT domain is always
+  0xffffffff (aka maximum possible 32-bit value)
 * **assigned_harts** - At boot-time all valid HARTs of a RISC-V platform
   are assigned the ROOT domain which changes later based on OpenSBI
   platform support
@@ -156,6 +161,9 @@ The DT properties of a domain instance DT node are as follows:
 
 * **compatible** (Mandatory) - The compatible string of the domain instance.
   This DT property should have value *"opensbi,domain,instance"*
+* **init-order** (Optional) - The 32-bit initialization order for the domain
+  instance. If this DT property is not available then domain instance DT node
+  offset is used as default value.
 * **possible-harts** (Optional) - The list of CPU DT node phandles for the
   the domain instance. This list represents the possible HARTs of the
   domain instance.
@@ -183,23 +191,16 @@ The DT properties of a domain instance DT node are as follows:
   domain instance. If not specified, defaults to the coldboot HART. Note that
   if the coldboot HART is assigned to this domain, it will be forced as
   the boot HART regardless of this property.
-* **next-arg1** (Optional) - The 64 bit next booting stage arg1 for the
-  domain instance. If this DT property is not available and coldboot HART
-  is not assigned to the domain instance then **next booting stage arg1 of coldboot HART**
-  is used as default value.
-* **next-addr** (Optional) - The 64 bit next booting stage address for the
-  domain instance. If this DT property is not available and coldboot HART
-  is not assigned to the domain instance then **0x0** is used as default
-  value. If this DT property is not available and coldboot HART is assigned
-  to the domain instance then **next booting stage address of coldboot HART**
-  is used as default value.
+* **next-arg1** (Optional) - The 64 bit next booting stage arg1
+  for the domain instance. If this DT property is not available
+  then **next booting stage arg1 of coldboot HART** is used as default value.
+* **next-addr** (Optional) - The 64 bit next booting stage address
+  for the domain instance. If this DT property is not available
+  then **next booting stage address of coldboot HART** is used as default value.
 * **next-mode** (Optional) - The 32 bit next booting stage mode for the
   domain instance. The possible values of this DT property are: **0x1**
   (S-mode), and **0x0** (U-mode). If this DT property is not available
-  and coldboot HART is not assigned to the domain instance then **0x1**
-  is used as default value. If this DT property is not available and
-  coldboot HART is assigned to the domain instance then **next booting
-  stage mode of coldboot HART** is used as default value.
+  then **next booting stage mode of coldboot HART** is used as default value.
 * **system-reset-allowed** (Optional) - A boolean flag representing
   whether the domain instance is allowed to do system reset.
 * **system-suspend-allowed** (Optional) - A boolean flag representing
@@ -207,15 +208,14 @@ The DT properties of a domain instance DT node are as follows:
 
 ### Assigning HART To Domain Instance
 
-By default, all HARTs are assigned to **the ROOT domain**. The OpenSBI
-platform support can provide the HART to domain instance assignment using
-platform specific callback.
+At boot-time, a HART is assigned to a non-ROOT domain on first come
+first serve basis if the HART is listed as a possible HART of the
+non-ROOT domain. If no non-ROOT domain list a HART as possible HART
+then the HART is assigned to **the ROOT domain**.
 
-The HART to domain instance assignment can be parsed from the device tree
-using optional DT property **opensbi-domain** in each CPU DT node. The
-value of DT property **opensbi-domain** is the DT phandle of the domain
-instance DT node. If **opensbi-domain** DT property is not specified then
-corresponding HART is assigned to **the ROOT domain**.
+At runtime, the assignment of a HART can change from one domain to
+another domain as long as the HART is listed in possible HARTs of
+both domains.
 
 ### Domain Configuration Only Accessible to OpenSBI
 
@@ -289,7 +289,6 @@ be done:
             device_type = "cpu";
             reg = <0x00>;
             compatible = "riscv";
-            opensbi-domain = <&tdomain>;
             ...
         };
 
@@ -297,7 +296,6 @@ be done:
             device_type = "cpu";
             reg = <0x01>;
             compatible = "riscv";
-            opensbi-domain = <&udomain>;
             ...
         };
 
@@ -305,7 +303,6 @@ be done:
             device_type = "cpu";
             reg = <0x02>;
             compatible = "riscv";
-            opensbi-domain = <&udomain>;
             ...
         };
 
@@ -313,7 +310,6 @@ be done:
             device_type = "cpu";
             reg = <0x03>;
             compatible = "riscv";
-            opensbi-domain = <&udomain>;
             ...
         };
 
@@ -321,7 +317,6 @@ be done:
             device_type = "cpu";
             reg = <0x04>;
             compatible = "riscv";
-            opensbi-domain = <&udomain>;
             ...
         };
     };

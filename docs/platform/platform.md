@@ -32,6 +32,10 @@ OpenSBI currently supports the following virtual and hardware platforms:
   used on the Renesas RZ/Five SMARC EVK board. More details on this platform can
   be found in the file *[renesas-rzfive.md]*.
 
+* **zmachine**: A bare minimum RV32 machine plus one custom peripheral, the
+  zdevice. More details on this platform can be found in the file
+  *[zmachine.md]*.
+
 The code for these supported platforms can be used as example to implement
 support for other platforms. The *platform/template* directory also provides
 template files for implementing support for a new platform. The *objects.mk*,
@@ -46,3 +50,4 @@ comments to facilitate the implementation.
 [spike.md]: spike.md
 [shakti_cclass.md]: shakti_cclass.md
 [renesas-rzfive.md]: renesas-rzfive.md
+[zmachine.md]: zmachine.md

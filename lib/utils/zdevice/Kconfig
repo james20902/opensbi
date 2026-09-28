@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: BSD-2-Clause
+
+menu "ZDEVICE Support"
+
+config ZDEVICE
+	bool "zdevice XOR/shift scratchpad support"
+	default n
+	help
+	  Driver for the zdevice peripheral: a 64 KB MMIO window whose data
+	  scratchpad XORs every halfword written to it against a programmable
+	  key and optionally shifts the result left by two bits.
+
+config FDT_ZDEVICE
+	bool "FDT based zdevice probing"
+	depends on FDT
+	select ZDEVICE
+	default n
+	help
+	  Locate the zdevice through a "zmachine,zdevice" device tree node
+	  instead of a compiled-in address.
+
+config ZDEVICE_SELFTEST
+	bool "zdevice power-on self test"
+	depends on ZDEVICE
+	default n
+	help
+	  After probing the device, write a handful of values through it and
+	  check that the XOR/shift transform matches the specification. Useful
+	  when bringing up the QEMU model of the device.
+
+endmenu

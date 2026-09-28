@@ -68,15 +68,17 @@ FW_DYNAMIC=n
 # Jump firmware configuration.
 #
 # OpenSBI does not carry the kernel: something else loads it to FW_JUMP_ADDR
-# and OpenSBI just jumps there in S-mode once it is done initializing. Keep
-# FW_JUMP_ADDR equal to the link address in kernel.ld.
+# and OpenSBI just jumps there in S-mode once it is done initializing. The
+# kernel lives 48 KiB into the payload RAM at 0xa0000000, not in main RAM.
+# Keep FW_JUMP_ADDR equal to the link address in kernel.ld and to
+# ZMACHINE_KERNEL_BASE in the QEMU machine.
 #
 # The device tree is relocated to FW_JUMP_FDT_ADDR before the jump and its
-# address arrives in a1. That is 14 MiB clear of the kernel entry, so the
-# blob cannot land on top of a kernel that grows.
+# address arrives in a1. That stays in main RAM, so the blob cannot land on
+# top of the kernel however large the kernel grows.
 #
 FW_JUMP=y
-FW_JUMP_ADDR=0x80200000
+FW_JUMP_ADDR=0xa000c000
 FW_JUMP_FDT_ADDR=0x81000000
 
 #

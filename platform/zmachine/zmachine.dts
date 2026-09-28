@@ -2,7 +2,8 @@
 
 /*
  * Device tree for the "zmachine" platform: a bare-minimum RISC-V machine
- * (one hart, RAM, CLINT, one 8250 UART) plus the custom zdevice peripheral.
+ * (one hart, RAM, a separate payload RAM, CLINT, one 8250 UART) plus the
+ * custom zdevice peripheral.
  *
  * Keep this file in sync with the constants in platform.c and with the QEMU
  * machine model.
@@ -46,6 +47,16 @@
 		device_type = "memory";
 		/* 128 MiB */
 		reg = <0x80000000 0x08000000>;
+	};
+
+	/*
+	 * Payload RAM. OpenSBI enters the S-mode kernel 48 KiB in, at
+	 * FW_JUMP_ADDR (0xa000c000).
+	 */
+	memory@a0000000 {
+		device_type = "memory";
+		/* 1 MiB */
+		reg = <0xa0000000 0x00100000>;
 	};
 
 	soc {

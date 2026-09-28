@@ -2,7 +2,8 @@ zmachine Platform
 =================
 
 The **zmachine** platform is a bare minimum RV32 machine — one hart, RAM, a
-CLINT and a single 8250 UART — plus one custom peripheral, the **zdevice**.
+separate payload RAM for the kernel, a CLINT and a single 8250 UART — plus one
+custom peripheral, the **zdevice**.
 There is deliberately no interrupt controller: nothing on this machine raises
 an external interrupt.
 
@@ -19,12 +20,15 @@ Memory map
 | `0x10000000` | 256 B   | 8250/16550 UART, 3686400 Hz input clock |
 | `0x60000000` | 64 KiB  | zdevice                               |
 | `0x80000000` | 128 MiB | RAM                                   |
+| `0xa0000000` | 1 MiB   | Payload RAM, kernel entry at +0xc000  |
 
 The CPU is `rv32imac_zicsr_zifencei` with Sv32. There is no floating point.
 
 These addresses appear in three places that must agree with each other: the
 QEMU machine model, `platform/zmachine/zmachine.dts`, and the constants at
-the top of `platform/zmachine/platform.c`.
+the top of `platform/zmachine/platform.c`. The kernel entry point,
+`0xa000c000`, is `FW_JUMP_ADDR` in `platform/zmachine/objects.mk`, and has
+to match the QEMU machine model and the kernel's link address too.
 
 The zdevice
 -----------
@@ -100,15 +104,15 @@ make PLATFORM=zmachine \
 
 This is a *FW_JUMP* firmware: it does not carry the kernel. OpenSBI brings the
 machine up and then jumps to `FW_JUMP_ADDR` in S-mode, leaving whoever loaded
-the firmware to place the kernel there as well. `FW_JUMP_ADDR` is `0x80200000`
-and has to stay equal to the link address in `kernel.ld`.
+the firmware to place the kernel there as well. `FW_JUMP_ADDR` is `0xa000c000`,
+48 KiB into the payload RAM, and has to stay equal to the link address in
+`kernel.ld`.
 
 The device tree is built from `zmachine.dts`, embedded in the firmware via
 `FW_FDT_PATH`, and relocated to `FW_JUMP_FDT_ADDR` (`0x81000000`) before the
 jump. The kernel is entered with the hart id in `a0` and that address in `a1`.
-`0x81000000` is 14 MiB clear of the kernel entry, so the blob cannot land on
-top of a kernel that grows; move it further out if the kernel ever gets that
-large.
+`0x81000000` is in main RAM while the kernel runs from the payload RAM, so the
+blob cannot land on top of the kernel however large it grows.
 
 ### Toolchain notes
 
